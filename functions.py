@@ -49,7 +49,9 @@ def transcribe_audio(audio_input_file_path):
         transcript = st.session_state.openai_obj.audio.transcriptions.create(
             model="whisper-1",
             file=audio_input_file,
-            language="en"
+            language="en",
+            ###追加箇所###
+            response_format="verbose_json"
         )
     
     # 音声入力ファイルを削除
@@ -138,17 +140,20 @@ def create_chain(system_template):
 
     return chain
 
+######【シャドーイング】に関しての修正箇所ここから#####
 def create_problem_and_play_audio():
     """
     問題生成と音声ファイルの再生
-    Args:
-        chain: 問題文生成用のChain
-        speed: 再生速度（1.0が通常速度、0.5で半分の速さ、2.0で倍速など）
-        openai_obj: OpenAIのオブジェクト
     """
 
+    # ユーザーの英語レベルをプロンプトに渡す
+    level = st.session_state.englv if "englv" in st.session_state else "中級者"
+    prompt_input = f"User English Level: {level}"
+
     # 問題文を生成するChainを実行し、問題文を取得
-    problem = st.session_state.chain_create_problem.predict(input="")
+    problem = st.session_state.chain_create_problem.predict(input=prompt_input)
+    
+#####【シャドーイング】に関しての修正箇所ここまで#####
 
     # LLMからの回答を音声データに変換
     llm_response_audio = st.session_state.openai_obj.audio.speech.create(
@@ -174,3 +179,31 @@ def create_evaluation():
     llm_response_evaluation = st.session_state.chain_evaluation.predict(input="")
 
     return llm_response_evaluation
+
+#####【シャドーイング】【ディクテーション】に関しての追加箇所ここから#####
+def align_words(target_text: str, user_text: str):
+    """
+    シャドーイング評価用に単語を整形し、比較用リストを返す
+    """
+    import re
+    
+    # 記号削除 ＋ 小文字化
+    clean = lambda s: re.sub(r"[^a-zA-Z0-9\s]", "", s).lower().split()
+
+    return clean(target_text), clean(user_text)
+
+
+def extract_low_confidence_words(transcript, threshold=0.70):
+    """
+    Whisper verbose_json の words から、確信度が低い単語を抽出する
+    """
+    low_conf_words = []
+    if "words" in transcript:
+        for w in transcript["words"]:
+            if w.get("confidence", 1) < threshold:
+                low_conf_words.append({
+                    "word": w["word"],
+                    "confidence": round(w["confidence"], 2)
+                })
+    return low_conf_words
+#####【シャドーイング】【ディクテーション】に関しての追加箇所ここまで#####

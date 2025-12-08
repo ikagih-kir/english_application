@@ -164,18 +164,38 @@ if st.session_state.start_flg:
             st.session_state.messages.append({"role": "assistant", "content": st.session_state.problem})
             st.session_state.messages.append({"role": "user", "content": st.session_state.dictation_chat_message})
             
+            ######【ディクテーション】に関しての修正箇所ここから#####
+            # 単語比較（align_words を使う）
+            target_words, user_words = ft.align_words(
+                st.session_state.problem, 
+                st.session_state.dictation_chat_message
+            )
+
+            # 英語レベルを評価に反映
+            englv = st.session_state.englv
+            
+            # ディクテーション専用プロンプト生成
+            system_template = ct.SYSTEM_TEMPLATE_DICTATION_EVALUATION.format(
+                llm_text=st.session_state.problem,
+                user_text=st.session_state.dictation_chat_message,
+                target_words=target_words,
+                user_words=user_words
+            )
+
+            # チェーン生成
+            st.session_state.chain_evaluation = ft.create_chain(system_template)
+
+            # 評価処理
             with st.spinner('評価結果の生成中...'):
-                system_template = ct.SYSTEM_TEMPLATE_EVALUATION.format(
-                    llm_text=st.session_state.problem,
-                    user_text=st.session_state.dictation_chat_message
-                )
-                st.session_state.chain_evaluation = ft.create_chain(system_template)
                 # 問題文と回答を比較し、評価結果の生成を指示するプロンプトを作成
                 llm_response_evaluation = ft.create_evaluation()
             
             # 評価結果のメッセージリストへの追加と表示
             with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
                 st.markdown(llm_response_evaluation)
+            ######【ディクテーション】に関しての修正箇所ここまで#####   
+
+            # メッセージ記録    
             st.session_state.messages.append({"role": "assistant", "content": llm_response_evaluation})
             st.session_state.messages.append({"role": "other"})
             
@@ -203,9 +223,17 @@ if st.session_state.start_flg:
         with st.chat_message("user", avatar=ct.USER_ICON_PATH):
             st.markdown(audio_input_text)
 
+
+        #####【日常英会話】に関しての修正箇所ここから#####
+        #会話レベル（初級〜上級）をChainに渡す。
+        ##現状のチェーンは常に同じプロンプトなので、英語レベルセレクトボックスが見た目だけに。
+        ##LLMにレベル情報を渡すことで、ユーザー選択が回答に反映され、精度が上がる。
         with st.spinner("回答の音声読み上げ準備中..."):
             # ユーザー入力値をLLMに渡して回答取得
-            llm_response = st.session_state.chain_basic_conversation.predict(input=audio_input_text)
+            level_text = f"User English Level: {st.session_state.englv}"
+            llm_input = f"{level_text}\nUser said: {audio_input_text}"
+            llm_response = st.session_state.chain_basic_conversation.predict(input=llm_input)
+        #####【日常英会話】に関しての修正箇所ここまで#####
             
             # LLMからの回答を音声データに変換
             llm_response_audio = st.session_state.openai_obj.audio.speech.create(
@@ -261,15 +289,28 @@ if st.session_state.start_flg:
         # LLMが生成した問題文と音声入力値をメッセージリストに追加
         st.session_state.messages.append({"role": "assistant", "content": st.session_state.problem})
         st.session_state.messages.append({"role": "user", "content": audio_input_text})
-
+        
+        #####【シャドーイング】に関しての修正箇所ここから#####
         with st.spinner('評価結果の生成中...'):
             if st.session_state.shadowing_evaluation_first_flg:
-                system_template = ct.SYSTEM_TEMPLATE_EVALUATION.format(
-                    llm_text=st.session_state.problem,
-                    user_text=audio_input_text
+                # 単語リスト整形
+                target_words, user_words = ft.align_words(
+                    st.session_state.problem,
+                    audio_input_text
                 )
+                # Whisper confidence の低い単語取得
+                low_conf_words = ft.extract_low_confidence_words(transcript)
+                # シャドーイング用評価プロンプトを構築
+                system_template = ct.SYSTEM_TEMPLATE_SHADOWING_EVALUATION.format(
+                    llm_text=st.session_state.problem,
+                    user_text=audio_input_text,
+                    target_words=target_words,
+                    user_words=user_words,
+                    low_confidence_words=low_conf_words
+                )
+                # 評価チェーン生成
                 st.session_state.chain_evaluation = ft.create_chain(system_template)
-                st.session_state.shadowing_evaluation_first_flg = False
+        #####【シャドーイング】に関しての修正箇所ここまで#####
             # 問題文と回答を比較し、評価結果の生成を指示するプロンプトを作成
             llm_response_evaluation = ft.create_evaluation()
         
@@ -278,6 +319,24 @@ if st.session_state.start_flg:
             st.markdown(llm_response_evaluation)
         st.session_state.messages.append({"role": "assistant", "content": llm_response_evaluation})
         st.session_state.messages.append({"role": "other"})
+        
+        #####【シャドーイング】に関しての追加箇所ここから#####
+        # 低confidence単語をゆっくり再生（学習補助）
+        if low_conf_words:
+            with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                st.info("聞き取りづらかった単語をゆっくり再生します。")
+
+            for w in low_conf_words:
+                slow_audio = st.session_state.openai_obj.audio.speech.create(
+                    model="tts-1",
+                    voice="alloy",
+                    input=w["word"]
+                )
+                slow_file = f"{ct.AUDIO_OUTPUT_DIR}/slow_{w['word']}.wav"
+
+                ft.save_to_wav(slow_audio.content, slow_file)
+                ft.play_wav(slow_file, speed=0.6)
+        #####【シャドーイング】に関しての追加箇所ここまで#####
         
         # 各種フラグの更新
         st.session_state.shadowing_flg = True
